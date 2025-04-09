@@ -12,6 +12,9 @@ project(${PROJECT_NAME} LANGUAGES CXX)
 # not be changed
 set(PLUGIN_NAME "video_player_win_plugin")
 
+# Include custom dependencies management
+include(${CMAKE_CURRENT_SOURCE_DIR}/dependencies.cmake)
+
 ######## Jacky {
 # download nuget.exe (Microsoft) and Microsoft WebView2 SDK
 # ref: https://github.com/jnschulze/flutter-webview-windows/blob/main/windows/CMakeLists.txt
@@ -72,6 +75,11 @@ apply_standard_settings(${PLUGIN_NAME})
 target_link_libraries(${PLUGIN_NAME} PRIVATE ${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.ImplementationLibrary/build/native/Microsoft.Windows.ImplementationLibrary.targets)
 # Jacky }
 
+# Add dependency on our custom dependencies
+add_dependencies(${PLUGIN_NAME} video_player_win_all_dependencies)
+
+# Suppress missing dependency warnings for Windows.Devices.Printers.Extensions.dll
+suppress_dependency_warnings(${PLUGIN_NAME})
 
 # Symbols are hidden by default to reduce the chance of accidental conflicts
 # between plugins. This should not be removed; any symbols that should be
@@ -84,7 +92,43 @@ target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
 # dependencies here.
 target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include")
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
+
+# Fix for unresolved external symbols in the C++ standard library
+target_link_libraries(${PLUGIN_NAME} PRIVATE 
+  flutter 
+  flutter_wrapper_plugin
+  mfplat.lib
+  mfuuid.lib
+  d3d11.lib
+  dxgi.lib
+  shlwapi.lib
+  windowsapp
+)
+
+# Ensure proper C++ standard library linking
+if(MSVC)
+  # Force static linking of the C++ runtime library to avoid issues with firebase_firestore
+  set_target_properties(${PLUGIN_NAME} PROPERTIES
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  
+  # Add specific compiler flags to address linking issues
+  target_compile_options(${PLUGIN_NAME} PRIVATE 
+    "/Zc:__cplusplus" # Enable correct __cplusplus macro
+    "/EHsc"           # Enable standard C++ exception handling
+    "/permissive-"    # Enforce strict standard compliance
+  )
+endif()
+
+# Add Windows 10 SDK libraries
+find_path(MEDIA_FOUNDATION_DIR
+  NAMES Windows.Media.h
+  PATHS "${CMAKE_SYSTEM_INCLUDE_PATH}"
+  PATH_SUFFIXES "um"
+)
+
+if(MEDIA_FOUNDATION_DIR)
+  target_include_directories(${PLUGIN_NAME} PRIVATE "${MEDIA_FOUNDATION_DIR}")
+endif()
 
 # List of absolute paths to libraries that should be bundled with the plugin.
 # This list could contain prebuilt libraries, or libraries created by an
@@ -93,3 +137,15 @@ set(video_player_win_bundled_libraries
   ""
   PARENT_SCOPE
 )
+
+# Firebase compatibility fix - helps resolve the "__std_find_end_1" linking issue
+if(DEFINED firebase_firestore_bundled_libraries OR DEFINED firebase_core_bundled_libraries)
+  message(STATUS "Detected Firebase in the project, applying compatibility fixes")
+  
+  # When firebase is used, ensure consistent runtime library
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  
+  # Force consistent C++ standard across all libraries
+  set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+endif()
